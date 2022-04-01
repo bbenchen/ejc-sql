@@ -38,7 +38,6 @@
 (require 'cl-lib)
 (require 'org-table)
 (require 'ejc-lib)
-(require 'ejc-direx)
 (require 'ejc-eldoc)
 (require 'ejc-format)
 (require 'ejc-interaction)
