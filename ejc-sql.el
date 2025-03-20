@@ -110,7 +110,7 @@ results. When nil, otherwise, provide `ejc-sql' users expected behaviour."
   :group 'ejc-sql
   :type '(plist :key-type string :value-type (vector symbol string)))
 
-(defcustom ejc-completion-system 'ido
+(defcustom ejc-completion-system 'standard
   "The completion system used by `ejc-connect'."
   :group 'ejc-sql
   :type '(radio
@@ -284,6 +284,7 @@ results. When nil, otherwise, provide `ejc-sql' users expected behaviour."
                                  dependencies
                                  classpath
                                  separator
+                                 sslmode
                                  ;; ----------
                                  ;; Optional:
                                  classname)
@@ -321,6 +322,7 @@ For more details about parameters see `get-connection' function in jdbc.clj:
                                            (-map 'file-truename classpath))
                                   (vector (file-truename classpath)))))
                         (cons :separator separator)
+                        (cons :sslmode sslmode)
                         (cons :classname classname)))
                  new-connection))
               ejc-connections)))
@@ -367,7 +369,11 @@ For more details about parameters see `get-connection' function in jdbc.clj:
 (defun ejc-set-mode-name (connection-name)
   "Show CONNECTION-NAME as part of `mode-name' in `mode-line'."
   (setq mode-name (format "%s->[%s]"
-                          (car (split-string mode-name "->\\[.+\\]"))
+                          (car (split-string
+                                (if (listp mode-name)
+                                    (car mode-name)
+                                  mode-name)
+                                "->\\[.+\\]"))
                           connection-name)))
 
 (cl-defun ejc-add-connection (&optional connection-name db)
@@ -391,18 +397,19 @@ If the current mode is `sql-mode' prepare buffer to operate as `ejc-sql-mode'."
                  (concat "ejc-sql is enabled, ignore source block connection"
                          " header arguments and use ejc-sql to execute it? ")))))
       (funcall orig-fun body params)
-    (cl-multiple-value-bind (beg end) (save-mark-and-excursion
-                                        (org-babel-mark-block)
-                                        (list (point) (mark)))
-      (ejc-eval-user-sql-at-point
-       :beg beg
-       :end end
+    (let* ((info (org-babel-get-src-block-info 'no-eval))
+           (expanded-body (if (org-babel-noweb-p (nth 2 info) :eval)
+                              (org-babel-expand-noweb-references info)
+                            (nth 1 info))))
+      (ejc-eval-user-sql
+       expanded-body
        :sync ejc-org-mode-show-results
        :display-result (not ejc-org-mode-show-results))
       (if ejc-org-mode-show-results
           (with-temp-buffer
             (insert-file-contents (ejc-get-result-file-path))
-            (buffer-string))))))
+            (or (org-babel-read-table)
+                (buffer-string)))))))
 
 (defun ejc-org-edit-special (orig-fun &rest args)
   (if (and (equal "sql" (car (org-babel-get-src-block-info)))
@@ -858,7 +865,6 @@ Buffer can be saved to file with `ejc-temp-editor-file' path."
         (find-file tmp-file-path)
         (rename-buffer tmp-buffer-name)
         (sql-mode)
-        (auto-fill-mode t)
         (ejc-add-connection)
         (get-buffer tmp-buffer-name)))))
 

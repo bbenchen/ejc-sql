@@ -1,13 +1,13 @@
-[![Emacs](https://img.shields.io/badge/Emacs-26-8e44bd.svg)](https://www.gnu.org/software/emacs/)
+[![Emacs](https://img.shields.io/badge/Emacs-27-8e44bd.svg)](https://www.gnu.org/software/emacs/)
 [![License GPL 2](https://img.shields.io/badge/license-GPL_2-green.svg)](http://www.gnu.org/licenses/gpl-2.0.txt)
 [![MELPA](https://melpa.org/packages/ejc-sql-badge.svg)](https://melpa.org/#/ejc-sql)
 [![Melpa Stable](https://stable.melpa.org/packages/ejc-sql-badge.svg)](https://stable.melpa.org/#/ejc-sql)
-[![Build Status](https://api.travis-ci.org/kostafey/ejc-sql.svg?branch=master)](https://travis-ci.org/kostafey/ejc-sql#)
-[![Coverage Status](https://coveralls.io/repos/kostafey/ejc-sql/badge.svg?branch=master)](https://coveralls.io/github/kostafey/ejc-sql?branch=master)
+[![Build Status](https://github.com/kostafey/ejc-sql/workflows/CI/badge.svg)](https://github.com/kostafey/ejc-sql/actions?query=workflow%3ACI)
+[![Coverage Status](https://coveralls.io/repos/github/kostafey/ejc-sql/badge.svg?branch=master)](https://coveralls.io/github/kostafey/ejc-sql?branch=master)
 
 # ejc-sql
 
-<img src="https://github.com/kostafey/ejc-sql/blob/master/img/ejc-sql-logo.png" width="220px"
+<img src="https://gitlab.com/kostafey/ejc-sql/-/raw/master/img/ejc-sql-logo.png" width="220px"
  alt="ejc-sql logo" align="right" />
 
 ejc-sql turns Emacs into a simple SQL client; it uses a JDBC connection to
@@ -39,6 +39,7 @@ formatting of SQL scripts are also available.
     - [Presto connection](#prestoconnection)
     - [ClickHouse connection](#clickhouseconnection)
     - [ElasticSearch connection](#elasticsearchconnection)
+    - [Snowflake connection](#snowflakeconnection)
 - [Usage](#usage)
   - [Basic use case](#basic-use-case)
   - [Separators & delimiters](#separators-delimiters)
@@ -185,13 +186,17 @@ To activate `company-quickhelp` add the following to your `.emacs`:
 <a id="minibuffer-completion"></a>
 ### Minibuffer completion
 
-By default `ido` is used as minibuffer the completion system. You can change
-this to leverage another option by editing `ejc-completion-system` and
-selecting `standard`. This will allow you to use it with any configured
-completion mechanism for example, [ivy](https://github.com/abo-abo/swiper):
+By default standard `completing-read` is used as minibuffer the completion
+system. This is allow you to use it with any configured
+completion mechanism for example, [vertico](https://github.com/minad/vertico),
+[ivy](https://github.com/abo-abo/swiper)
+or [helm](https://github.com/emacs-helm/helm).
+You can change this to `ido-completing-read`
+([ido](https://www.gnu.org/software/emacs/manual/html_mono/ido.html))
+by editing `ejc-completion-system` and selecting `ido`:
 
 ```elisp
-(setq ejc-completion-system 'standard)
+(setq ejc-completion-system 'ido)
 ```
 
 ### ElDoc
@@ -489,7 +494,7 @@ mvn org.apache.maven.plugins:maven-dependency-plugin:get -Dartifact=net.sourcefo
 
 **PostgreSQL**
 ```
-mvn org.apache.maven.plugins:maven-dependency-plugin:get -Dartifact=postgresql:postgresql:9.3-1102.jdbc41 -DrepoUrl=http://clojars.org/repo/
+mvn org.apache.maven.plugins:maven-dependency-plugin:get -Dartifact=org.postgresql:postgresql:42.6.0
 ```
 
 **MySQL**
@@ -686,8 +691,8 @@ GRANT SELECT ON mysql.help_keyword TO a_user;
 ;; PostgreSQL example
 (ejc-create-connection
  "PostgreSQL-db-connection"
- :classpath (concat "~/.m2/repository/postgresql/postgresql/9.3.1102.jdbc41/"
-                     "postgresql-9.3-1102.jdbc41.jar")
+ :classpath (concat "~/.m2/repository/org.postgresql/postgresql/42.6.0/"
+                    "postgresql-42.6.0.jar")
  :subprotocol "postgresql"
  :subname "//localhost:5432/my_db_name"
  :user "a_user"
@@ -731,9 +736,9 @@ GRANT SELECT ON mysql.help_keyword TO a_user;
 ;; ClickHouse example
 (ejc-create-connection
   "ch@180"
-  :dependencies [[ru.yandex.clickhouse/clickhouse-jdbc "0.2.6"]]
+  :dependencies [[com.clickhouse/clickhouse-jdbc "0.3.2"]]
   :dbtype "clickhouse"
-  :classname "ru.yandex.clickhouse.ClickHouseDriver"
+  :classname "com.clickhouse.jdbc.ClickHouseDriver"
   :connection-uri (concat "jdbc:clickhouse://10.1.4.180:8123/" "testdb"))
 ```
 
@@ -747,6 +752,22 @@ GRANT SELECT ON mysql.help_keyword TO a_user;
   :dbtype "elasticsearch"
   :classname "org.elasticsearch.xpack.sql.jdbc.EsDriver"
   :connection-uri (concat "jdbc:es://172.16.13.177:9200/"))
+```
+
+<a id="snowflakeconnection"></a>
+### Snowflake connection
+```lisp
+(ejc-create-connection
+ "snowflake"
+ :dependencies [[net.snowflake/snowflake-jdbc "3.13.27"]
+                [net.java.dev.jna/jna "5.13.0"]]
+ :connection-uri (concat "jdbc:snowflake://my-db.snowflakecomputing.com:443"
+                         "?user="my-email@myjob.com"
+                         "&warehouse=my-warehouse"
+                         "&role=my-role"
+                         "&db=my-db"
+                         "&authenticator=externalbrowser"
+                         "&JDBC_QUERY_RESULT_FORMAT=JSON"))
 ```
 
 ## Usage
@@ -1044,10 +1065,11 @@ List of other interactive functions
 List of snippets:
 
 __select__ | __where__ | __inner__
------------|-----------|------------
+-----------|-----------|-------------
 __insert__ | __begin__ | __left__
 __update__ | __grant__ | __right__
 __delete__ | __revoke__| __alter__
+__show__   | __drop.d__| __create.d__
 
 
 ## Troubleshooting
@@ -1079,7 +1101,7 @@ Increase `nrepl-sync-request-timeout`, e.g.:
 
 ## License
 
-Copyright © 2012-2020 Kostafey <kostafey@gmail.com> and
+Copyright © 2012-2024 Kostafey <kostafey@gmail.com> and
 [contributors](https://github.com/kostafey/ejc-sql/contributors)
 
 Distributed under the General Public License 2.0+

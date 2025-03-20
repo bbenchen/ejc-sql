@@ -1,6 +1,6 @@
 ;;; connect.clj -- Core clojure functions for ejc-sql emacs extension.
 
-;;; Copyright © 2013-2019 - Kostafey <kostafey@gmail.com>
+;;; Copyright © 2013-2024 - Kostafey <kostafey@gmail.com>
 
 ;;; This program is free software; you can redistribute it and/or modify
 ;;; it under the terms of the GNU General Public License as published by
@@ -17,32 +17,26 @@
 ;;; Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.  */
 
 (ns ejc-sql.connect
-  (:use [clojure.java.io]
-        [ejc-sql.lib]
-        [ejc-sql.cache]
-        [clomacs])
   (:require [clojure.java.jdbc :as j]
             [clojure.java.io :as io]
             [clojure.string :as s]
-            [ejc-sql.output :as o])
-  (:import [java.sql Connection
-                     DriverManager
-                     PreparedStatement
-                     ResultSet
-            SQLException]
-           [java.io File]))
+            [clomacs :refer [clomacs-defn]]
+            [ejc-sql.output :as o]
+            [ejc-sql.lib :refer [select? ddl? clob-to-string-row *max-column-width*]]
+            [ejc-sql.cache :refer [invalidate-cache]])
+  (:import [java.sql SQLException]))
 
 (def db
   "DataBase connection properties list from the last transaction.
 For debug purpose."
   (atom nil))
 
+(defn set-db [ejc-db]
+  (reset! db ejc-db))
+
 (def current-query
   "Current running query data."
   (atom {}))
-
-(defn set-db [ejc-db]
-  (reset! db ejc-db))
 
 (defn handle-special-cases [db sql]
   (case (:subprotocol db)
@@ -78,13 +72,13 @@ For debug purpose."
   Unsafe for INSERT/UPDATE/CREATE/ALTER queries."
   []
   (future
-    (if (is-statement-not-closed?)
+    (when (is-statement-not-closed?)
       (let [conn (:conn @current-query)]
         (try
           (.rollback conn)
           (finally
             (.close conn)))))
-    (if (is-query-process-running?)
+    (when (is-query-process-running?)
       (future-cancel (:runner @current-query))))
   (:start-time @current-query))
 
@@ -125,11 +119,11 @@ SELECT * FROM urls WHERE path like '%http://localhost%'"
 (def comments-re
   "Regex to search comments in SQL expression."
   (java.util.regex.Pattern/compile
-   "(?:/\\*.*?\\*/)|(?:--.*?$)",
+   "(?:/\\*.*?\\*/[\\s;]*\n?)|(?:--.*?$\n)",
    (bit-or java.util.regex.Pattern/DOTALL
            java.util.regex.Pattern/MULTILINE)))
 
-(clomacs-defn complete-query ejc-complete-query
+(clomacs-defn complete-query 'ejc-complete-query
               :doc "Show file contents with SQL query evaluation results.")
 
 (defn complete
@@ -160,57 +154,67 @@ SELECT * FROM urls WHERE path like '%http://localhost%'"
 
 (defn eval-sql-core
   "The core SQL evaluation function."
-  [& {:keys [db sql fetch-size max-rows]
+  [& {:keys [db sql-list fetch-size max-rows]
       :or {db @ejc-sql.connect/db}}]
   (set-db db)
   (java.util.Locale/setDefault (java.util.Locale. "UK"))
   (try
-    (if (select? sql)
-      (list
-       :result-set
-       (with-open [conn (j/get-connection db)]
-         (let [stmt (j/prepare-statement
-                     conn sql
-                     {:fetch-size (or fetch-size @o/fetch-size 0)
-                      :max-rows (or max-rows
-                                    (if (and (> @o/max-rows 0)
-                                             @o/show-too-many-rows-message)
-                                      ;; Get one more row to recognize that
-                                      ;; the actual number of records from this
-                                      ;; query is bigger than `max-rows`.
-                                      (+ @o/max-rows 1)
-                                      @o/max-rows)
-                                    0)})]
-           (swap! current-query assoc
-                  :stmt stmt
-                  :conn conn)
-           (j/query db stmt
-                    {:as-arrays? true
-                     :result-set-fn
-                     (fn [rs]
-                       (let [single-record?
-                             (not (next (next rs)))]
-                         (mapv
-                          #(clob-to-string-row
-                            % single-record?)
-                          rs)))}))))
-      (let [result (first (j/execute! db (list sql)))
-            msg (if (> result 0)
-                  (str "Records affected: " result)
-                  "Executed")]
-        (if (ddl? sql)
-          (invalidate-cache db))
-        (list :message msg)))
+    (with-open [conn (j/get-connection db)]
+      (let [statement (.createStatement conn)]
+        (mapv (fn [sql]
+                (if (select? sql)
+                  ;; SELECT
+                  (list
+                   :result-set
+                   (let [stmt (j/prepare-statement
+                               conn sql
+                               {:fetch-size (or fetch-size @o/fetch-size 0)
+                                :max-rows (or max-rows
+                                              (if (and (> @o/max-rows 0)
+                                                       @o/show-too-many-rows-message)
+                                                ;; Get one more row to recognize that
+                                                ;; the actual number of records from this
+                                                ;; query is bigger than `max-rows`.
+                                                (+ @o/max-rows 1)
+                                                @o/max-rows)
+                                              0)})]
+                     (swap! current-query assoc
+                            :stmt stmt
+                            :conn conn)
+                     (j/query db stmt
+                              {:as-arrays? true
+                               :result-set-fn
+                               (fn [rs]
+                                 (let [single-record?
+                                       (not (next (next rs)))]
+                                   (mapv
+                                    #(clob-to-string-row
+                                      % single-record?)
+                                    rs)))})))
+                  ;; DML or DDL
+                  (let [result-set? (.execute statement sql)
+                        message (if-let [result (when
+                                                 (and
+                                                  (not result-set?)
+                                                  (> (.getUpdateCount statement) 0))
+                                                  (.getUpdateCount statement))]
+                                  (str "Records affected: " result)
+                                  "Executed")]
+                    (when (ddl? sql)
+                      (invalidate-cache db))
+                    (list :message message))))
+              sql-list)))
     (catch SQLException e
-      (list :message
-            (o/unify-str "Error: " (.getMessage e))))))
+      [(list :message
+             (o/unify-str "Error: " (.getMessage e)))])))
 
-(defn- eval-user-sql [db sql & {:keys [rows-limit
-                                       fetch-size
-                                       append
-                                       display-result
-                                       result-file]}]
+(defn- eval-user-sql
   "Receive raw SQL from the user, log it, divide by statements and eval them."
+  [db sql & {:keys [rows-limit
+                    fetch-size
+                    append
+                    display-result
+                    result-file]}]
   (let [sql (s/trim sql)
         _ (do (o/log-sql (str sql "\n"))
               (o/clear-result-file :result-file result-file))
@@ -224,29 +228,29 @@ SELECT * FROM urls WHERE path like '%http://localhost%'"
                              [sql nil])
         sql (handle-special-cases db sql)
         statement-separator-re (get-separator-re (or manual-separator ";"))
-        results (doall
-                 (for [sql-part (filter
+        results (let [sql-parts (filter
                                  ;; Remove parts contains comments only.
                                  (fn [part]
-                                   (not (empty?
-                                         (s/trim
-                                          (s/replace part comments-re "")))))
+                                   (seq (s/trim
+                                         (s/replace part comments-re ""))))
                                  (if (or (not (:separator db)) manual-separator)
                                    (s/split sql statement-separator-re)
-                                   [sql]))]
-                   (let [[result-type result] (eval-sql-core :db db
-                                                             :sql sql-part
-                                                             :max-rows rows-limit
-                                                             :fetch-size fetch-size)]
-                     (if (= result-type :result-set)
-                       (o/print-table result fetch-size)
-                       (println result))
-                     [result-type result])))]
+                                   [sql]))
+                      result-list (eval-sql-core :db db
+                                                 :sql-list sql-parts
+                                                 :max-rows rows-limit
+                                                 :fetch-size fetch-size)
+                      _ (doall
+                         (for [[result-type result] result-list]
+                           (if (= result-type :result-set)
+                             (o/print-table result fetch-size)
+                             (println result))))]
+                  result-list)]
     (complete
      nil
      :start-time (:start-time @current-query)
      :status (if (or
-                  (every? (fn [[result-type result]]
+                  (every? (fn [[result-type _]]
                             (= result-type :result-set))
                           results)
                   (not (some (fn [[result-type result]]
@@ -258,7 +262,7 @@ SELECT * FROM urls WHERE path like '%http://localhost%'"
                :done
                (if (and
                     (= (count results) 1)
-                    (some (fn [[result-type result]]
+                    (some (fn [[_ result]]
                             (.contains (s/lower-case result)
                                        "closed connection"))
                           results))
@@ -301,7 +305,8 @@ SELECT * FROM urls WHERE path like '%http://localhost%'"
                       (s/join "\n" (.getStackTrace e)))
                  :start-time (:start-time @current-query)
                  :status :error
-                 :display-result true))))]
+                 :display-result true
+                 :result-file result-file))))]
     (if sync
       (run-query)
       (swap! current-query assoc
